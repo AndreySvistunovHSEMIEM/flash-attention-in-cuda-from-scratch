@@ -81,8 +81,16 @@ __global__ void matmul(const float* a, const float* b, float* c, int m, int k, i
     }
 }
 
-# Step 8 - transpose (not yet solved)
-# TODO: implement
+# Step 8 - transpose
+__global__ void transpose(const float* in, float* out, int rows, int cols) {
+    // TODO: write out[c*rows + r] = in[r*cols + c]
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (row < rows && col < cols) {
+        out[col * rows + row] = in[row * cols + col]; 
+    }
+}
 
 # Step 9 - qk_scores (not yet solved)
 # TODO: implement
