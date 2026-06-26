@@ -162,8 +162,23 @@ __global__ void pv_matmul(const float* p, const float* v, float* out, int seq_le
     out[row * head_dim + col] = tmp_val;
 }
 
-# Step 12 - naive_attention (not yet solved)
-# TODO: implement
+# Step 12 - naive_attention
+void naive_attention(const float* d_q, const float* d_k, const float* d_v, float* d_out, int seq_len, int head_dim) {
+    int BLOCK_SIZE = 32;
+    int GRID_SIZE_ROW = (seq_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    int GRID_SIZE_COL =  (head_dim + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    float *d_scores;
+    cudaMalloc(&d_scores, (size_t)seq_len * seq_len * sizeof(float));
+
+    dim3 threads(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 grid_qk(GRID_SIZE_ROW, GRID_SIZE_ROW);
+    dim3 grid(GRID_SIZE_COL, GRID_SIZE_ROW);
+
+    qk_scores<<<grid_qk, threads>>>(d_q, d_k, d_scores, seq_len, head_dim);
+    softmax_rows<<<seq_len, BLOCK_SIZE, BLOCK_SIZE * sizeof(float)>>>(d_scores, seq_len, seq_len);
+    pv_matmul<<<grid, threads>>>(d_scores, d_v, d_out, seq_len, head_dim);
+}
 
 # Step 13 - online_max (not yet solved)
 # TODO: implement
