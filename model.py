@@ -148,8 +148,19 @@ __global__ void softmax_rows(float* matrix, int rows, int cols) {
     __syncthreads();
 }
 
-# Step 11 - pv_matmul (not yet solved)
-# TODO: implement
+# Step 11 - pv_matmul
+__global__ void pv_matmul(const float* p, const float* v, float* out, int seq_len, int head_dim) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (row >= seq_len || col >= head_dim) return;
+    
+    float tmp_val = 0.0f;
+    for (int i = 0; i < seq_len; ++i) {
+        tmp_val += p[row * seq_len + i] * v[i * head_dim + col];
+    }
+    out[row * head_dim + col] = tmp_val;
+}
 
 # Step 12 - naive_attention (not yet solved)
 # TODO: implement
