@@ -112,9 +112,10 @@ __global__ void softmax_rows(float* matrix, int rows, int cols) {
     int row = blockIdx.x;
     if (row >= rows) return;
 
+    float *row_ptr = matrix + row * cols;
     float local_max = -FLT_MAX;
-    for (int col = threadIdx.x; col < cols; col += blockDim.x) {
-        local_max = fmaxf(local_max, matrix[row * cols + col]);
+    for (int i = threadIdx.x; i < cols; i += blockDim.x) {
+        local_max = fmaxf(local_max, row_ptr[i]);
     }
     sdata[threadIdx.x] = local_max;
     __syncthreads();
@@ -124,25 +125,26 @@ __global__ void softmax_rows(float* matrix, int rows, int cols) {
             sdata[threadIdx.x] = fmaxf(sdata[threadIdx.x], sdata[threadIdx.x + stride]);
         __syncthreads();
     }
-    float row_max = sdata[0];
+    float max_row = sdata[0];
     __syncthreads();
 
     float local_sum = 0.0f;
-    for (int col = threadIdx.x; col < cols; col += blockDim.x) {
-        local_sum += expf(matrix[row * cols + col] - row_max);
+    for (int i = threadIdx.x; i < cols; i += blockDim.x) {
+        local_sum += expf(row_ptr[i] - max_row);
     }
     sdata[threadIdx.x] = local_sum;
     __syncthreads();
-    for (int stride = blockDim.x / 2; stride > 0; stride >>=1) {
-        if (threadIdx.x < stride)
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) 
             sdata[threadIdx.x] += sdata[threadIdx.x + stride];
         __syncthreads();
     }
-    float row_sum = sdata[0];
+    float sum_row = sdata[0];
+    __syncthreads();
 
-    for (int col = threadIdx.x; col < cols; col += blockDim.x) {
-        matrix[row * cols + col] = expf(matrix[row * cols + col] - row_max) / row_sum;
-    }
+    for (int i = threadIdx.x; i < cols; i += blockDim.x)
+        row_ptr[i] = expf(row_ptr[i] - max_row) / sum_row;
     __syncthreads();
 }
 
