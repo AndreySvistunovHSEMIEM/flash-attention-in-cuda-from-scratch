@@ -197,8 +197,13 @@ __device__ float update_running_sum(float old_sum, float correction, float block
     return correction * old_sum + block_sum;
 }
 
-# Step 16 - rescale_output (not yet solved)
-# TODO: implement
+# Step 16 - rescale_output
+__device__ void rescale_output(float* out_row, int head_dim, float correction) {
+    // TODO: multiply each of the head_dim entries of out_row by correction in place
+	for (int idx = 0; idx < head_dim; ++idx) {
+		out_row[idx] *= correction;
+	}
+}
 
 # Step 17 - load_tile (not yet solved)
 # TODO: implement
