@@ -180,8 +180,10 @@ void naive_attention(const float* d_q, const float* d_k, const float* d_v, float
     pv_matmul<<<grid, threads>>>(d_scores, d_v, d_out, seq_len, head_dim);
 }
 
-# Step 13 - online_max (not yet solved)
-# TODO: implement
+# Step 13 - online_max
+__device__ float online_max(float old_max, float new_val) {
+    return fmaxf(old_max, new_val);
+}
 
 # Step 14 - correction_factor (not yet solved)
 # TODO: implement
