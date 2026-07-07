@@ -403,8 +403,20 @@ void flash_attention_launcher(const float* d_q, const float* d_k, const float* d
     );
 }
 
-# Step 25 - causal_mask (not yet solved)
-# TODO: implement
+# Step 25 - causal_mask
+#include <cmath>
+
+__device__ void causal_mask(float* s_tile, int q_row_start, int k_col_start,
+                            int tile_q, int tile_k, int thread_id, int num_threads) {
+    // TODO: write -INFINITY into entries where the global key index exceeds the global query index.
+    for (int idx = thread_id; idx < tile_q * tile_k; idx += num_threads) {
+        int row = idx / tile_k;
+        int col = idx % tile_k;
+        if (k_col_start + col > q_row_start + row) {
+            s_tile[idx] = -INFINITY;
+        }
+    }
+}
 
 # Step 26 - flash_attention_causal_kernel (not yet solved)
 # TODO: implement
