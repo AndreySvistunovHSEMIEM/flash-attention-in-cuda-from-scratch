@@ -299,8 +299,113 @@ __device__ void accumulate_pv(const float* p_tile, const float* v_tile, float* o
     }
 }
 
-# Step 23 - flash_attention_kernel (not yet solved)
-# TODO: implement
+# Step 23 - flash_attention_kernel
+#include <cfloat>
+
+__global__ void flash_attention_kernel(
+    const float* q, const float* k, const float* v, float* out,
+    int seq_len, int head_dim, int tile_q, int tile_k, float scale) {
+    // ── Разметка shared memory (соответствует shmem в scaffold) ──
+    extern __shared__ float smem[];
+    float* q_tile  = smem;                             // tile_q * head_dim
+    float* k_tile  = q_tile  + tile_q * head_dim;      // tile_k * head_dim
+    float* v_tile  = k_tile  + tile_k * head_dim;      // tile_k * head_dim
+    float* s_tile  = v_tile  + tile_k * head_dim;      // tile_q * tile_k
+    float* out_acc = s_tile  + tile_q * tile_k;        // tile_q * head_dim
+    float* m_i     = out_acc + tile_q * head_dim;      // tile_q
+    float* l_i     = m_i + tile_q;                     // tile_q
+    float* scratch = l_i + tile_q;                     // tile_q (m_block → m_new → block_sum)
+
+    int tid      = threadIdx.x;
+    int nthreads = blockDim.x;
+    int q_row_start = blockIdx.x * tile_q;
+
+    // ── 1. Загрузка Q-тайла и инициализация состояния ──
+    load_tile(q, q_tile, q_row_start, 0,
+              seq_len, head_dim, tile_q, head_dim, tid, nthreads);
+
+    for (int i = tid; i < tile_q; i += nthreads) {
+        m_i[i] = -FLT_MAX;
+        l_i[i] = 0.0f;
+    }
+    for (int i = tid; i < tile_q * head_dim; i += nthreads) {
+        out_acc[i] = 0.0f;
+    }
+    __syncthreads();
+
+    // ── 2. Стриминг по K/V-тайлам ──
+    int num_k_tiles = (seq_len + tile_k - 1) / tile_k;
+
+    for (int kt = 0; kt < num_k_tiles; ++kt) {
+        int k_row_start = kt * tile_k;
+
+        // (a) загрузить K и V тайлы
+        load_tile(k, k_tile, k_row_start, 0,
+                  seq_len, head_dim, tile_k, head_dim, tid, nthreads);
+        load_tile(v, v_tile, k_row_start, 0,
+                  seq_len, head_dim, tile_k, head_dim, tid, nthreads);
+        __syncthreads();
+
+        // (b) S = scale * Q_tile @ K_tile^T
+        tile_scores(q_tile, k_tile, s_tile,
+                    tile_q, tile_k, head_dim, scale, tid, nthreads);
+        __syncthreads();
+
+        // (c) маскируем K-позиции за пределами seq_len:
+        //     load_tile занулил их, но exp(0 - m) != 0 и отравит softmax
+        for (int idx = tid; idx < tile_q * tile_k; idx += nthreads) {
+            int c = idx % tile_k;
+            if (k_row_start + c >= seq_len) {
+                s_tile[idx] = -FLT_MAX;
+            }
+        }
+        __syncthreads();
+
+        // (d) m_block по строкам → scratch
+        tile_rowmax(s_tile, scratch, tile_q, tile_k, tid, nthreads);
+        __syncthreads();
+
+        // (e) online-обновление: m_new, alpha, рескейлинг O и l
+        for (int r = tid; r < tile_q; r += nthreads) {
+            float m_new = online_max(m_i[r], scratch[r]);
+            float alpha = correction_factor(m_i[r], m_new);
+            rescale_output(&out_acc[r * head_dim], head_dim, alpha);
+            l_i[r] *= alpha;      // block_sum добавим на шаге (h)
+            m_i[r]  = m_new;
+            scratch[r] = m_new;   // важно: tile_exp вычитает m_new, не m_block
+        }
+        __syncthreads();
+
+        // (f) P = exp(S - m_new)
+        tile_exp(s_tile, scratch, tile_q, tile_k, tid, nthreads);
+        __syncthreads();
+
+        // (g) построчная сумма P → scratch
+        tile_rowsum(s_tile, scratch, tile_q, tile_k, tid, nthreads);
+        __syncthreads();
+
+        // (h) l_i += block_sum  (вторая половина update_running_sum)
+        for (int r = tid; r < tile_q; r += nthreads) {
+            l_i[r] += scratch[r];
+        }
+        __syncthreads();
+
+        // (i) out_acc += P @ V_tile
+        accumulate_pv(s_tile, v_tile, out_acc,
+                      tile_q, tile_k, head_dim, tid, nthreads);
+        __syncthreads();
+    }
+
+    // ── 3. Нормализация и запись в global memory ──
+    for (int idx = tid; idx < tile_q * head_dim; idx += nthreads) {
+        int r = idx / head_dim;
+        int c = idx % head_dim;
+        int global_row = q_row_start + r;
+        if (global_row < seq_len) {
+            out[global_row * head_dim + c] = out_acc[idx] / l_i[r];
+        }
+    }
+}
 
 # Step 24 - flash_attention_launcher (not yet solved)
 # TODO: implement
