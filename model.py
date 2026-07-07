@@ -388,8 +388,20 @@ __global__ void flash_attention_kernel(const float* q, const float* k, const flo
     }
 }
 
-# Step 24 - flash_attention_launcher (not yet solved)
-# TODO: implement
+# Step 24 - flash_attention_launcher
+void flash_attention_launcher(const float* d_q, const float* d_k, const float* d_v,
+                              float* d_out, int seq_len, int head_dim,
+                              int tile_q, int tile_k) {
+    // TODO: configure grid/block/shared memory and launch flash_attention_kernel
+    int BLOCK_SIZE = 256;
+    int GRID_SIZE = (seq_len * head_dim - 1 + BLOCK_SIZE) / BLOCK_SIZE;
+    size_t shared_memory_capacity = (2 * tile_q * head_dim + 2 * tile_k * head_dim + tile_q * tile_k + tile_q * 3) * sizeof(float);
+
+    float scale = 1 / sqrtf(head_dim);
+    flash_attention_kernel<<<GRID_SIZE, BLOCK_SIZE, shared_memory_capacity>>>(
+        d_q, d_k, d_v, d_out, seq_len, head_dim, tile_q, tile_k, scale
+    );
+}
 
 # Step 25 - causal_mask (not yet solved)
 # TODO: implement
