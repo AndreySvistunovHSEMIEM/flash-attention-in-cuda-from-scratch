@@ -418,6 +418,96 @@ __device__ void causal_mask(float* s_tile, int q_row_start, int k_col_start,
     }
 }
 
-# Step 26 - flash_attention_causal_kernel (not yet solved)
-# TODO: implement
+# Step 26 - flash_attention_causal_kernel
+#include <cfloat>
+
+__global__ void flash_attention_causal_kernel(const float* q, const float* k, const float* v,
+                                       float* out, int seq_len, int head_dim,
+                                       int tile_q, int tile_k, float scale) {
+    // TODO: tiled causal flash attention using shared memory and online softmax
+    extern __shared__ float smem[];
+
+    float* q_tile = smem;
+    float* k_tile = q_tile + tile_q * head_dim;
+    float* v_tile = k_tile + tile_k * head_dim;
+    float* scores_tile = v_tile + tile_k * head_dim;
+    float* row_max_tile = scores_tile + tile_q * tile_k;
+    float* row_block_max_tile = row_max_tile + tile_q;
+    float* exp_sum_tile = row_block_max_tile + tile_q;
+    float* accumulative_tile = exp_sum_tile + tile_q;
+
+    int tidx = threadIdx.x;
+    int num_threads = blockDim.x;
+    int q_row_start = blockIdx.x * tile_q;
+
+    load_tile(q, q_tile, q_row_start, 0,
+        seq_len, head_dim, tile_q, head_dim, tidx, num_threads);
+    for (int idx = tidx; idx < tile_q; idx += num_threads) {
+        row_max_tile[idx] = -FLT_MAX;
+        row_block_max_tile[idx] = -FLT_MAX;
+        exp_sum_tile[idx] = 0.0f;
+    }
+    for (int idx = tidx; idx < tile_q * head_dim; idx += num_threads) {
+        accumulative_tile[idx] = 0.0f;
+    }
+    __syncthreads();
+
+    int kv_iterations = (seq_len + tile_k - 1) / tile_k;
+    for (int kt = 0; kt < kv_iterations; ++kt) {
+        int k_row_start = kt * tile_k;
+        if (k_row_start > q_row_start + tile_q - 1) break;
+        load_tile(k, k_tile, k_row_start, 0, seq_len, head_dim, tile_k, head_dim, tidx, num_threads);
+        load_tile(v, v_tile, k_row_start, 0, seq_len, head_dim, tile_k, head_dim, tidx, num_threads);
+        __syncthreads();
+
+        tile_scores(q_tile, k_tile, scores_tile, tile_q, tile_k, head_dim, scale, tidx, num_threads);
+        __syncthreads();
+
+        for (int idx = tidx; idx < tile_q * tile_k; idx += num_threads) {
+            int row = idx % tile_k;
+            if (k_row_start + row >= seq_len) {
+                scores_tile[idx] = -FLT_MAX;
+            }
+        }
+        __syncthreads();
+
+        causal_mask(scores_tile, q_row_start, k_row_start, tile_q, tile_k, tidx, num_threads);
+        __syncthreads();
+
+        tile_rowmax(scores_tile, row_max_tile, tile_q, tile_k, tidx, num_threads);
+        __syncthreads();
+
+        for (int idx = tidx; idx < tile_q; idx += num_threads) {
+            float m_new = online_max(row_block_max_tile[idx], row_max_tile[idx]);
+            float alpha = correction_factor(row_block_max_tile[idx], m_new);
+            rescale_output(&accumulative_tile[idx * head_dim], head_dim, alpha);
+            row_block_max_tile[idx] = m_new;
+            row_max_tile[idx] = m_new;
+            exp_sum_tile[idx] *= alpha;
+        }
+        __syncthreads();
+
+        tile_exp(scores_tile, row_max_tile, tile_q, tile_k, tidx, num_threads);
+        __syncthreads();
+
+        tile_rowsum(scores_tile, row_max_tile, tile_q, tile_k, tidx, num_threads);
+        __syncthreads();
+
+        for (int idx = tidx; idx < tile_q; idx += num_threads) {
+            exp_sum_tile[idx] += row_max_tile[idx];
+        }
+        __syncthreads();
+
+        accumulate_pv(scores_tile, v_tile, accumulative_tile, tile_q, tile_k, head_dim, tidx, num_threads);
+        __syncthreads();
+    }
+    for (int idx = tidx; idx < tile_q * head_dim; idx += num_threads) {
+        int row = idx / head_dim;
+        int col = idx % head_dim;
+        int global_row = q_row_start + row;
+        if (global_row < seq_len) {
+            out[global_row * head_dim + col] = accumulative_tile[idx] / exp_sum_tile[row];
+        }
+    }
+}
 
